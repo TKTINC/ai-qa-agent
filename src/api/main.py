@@ -1,287 +1,289 @@
 """
-AI QA Agent - FastAPI Application with Organized Routing Structure
-Comprehensive API setup with health monitoring, error handling, and modular routing.
+FastAPI Application - AI QA Agent
+Main application with comprehensive middleware and routing
 """
 
-import logging
-from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse
 import time
-from pathlib import Path
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
+from contextlib import asynccontextmanager
 
-from src.core.config import get_settings, Settings
-from src.core.logging import get_logger, setup_logging, PerformanceTimer, log_api_request
-from src.core.database import get_db, db_manager
-from src.core.exceptions import (
-    QAAgentException,
-    ValidationError,
-    RateLimitError,
-    qa_agent_exception_handler,
-    validation_exception_handler,
-    rate_limit_exception_handler,
-    general_exception_handler
-)
+from src.core.config import get_settings
+from src.core.database import init_db
+from src.core.logging import get_logger, log_request_response
+from src.core.exceptions import QAAgentException
+from src.api.routes import health, analysis, generation
 
-# Import routers
-from .routes.health import router as health_router
-from .routes.analysis import router as analysis_router
-from .routes.generation import router as generation_router
-
-# Setup logging
-setup_logging()
 logger = get_logger(__name__)
 
-
-class RequestLoggingMiddleware:
-    """Middleware to log all API requests with timing and context."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    # Startup
+    logger.info("🚀 AI QA Agent starting up...")
     
-    def __init__(self, app: FastAPI):
-        self.app = app
+    # Initialize database
+    try:
+        init_db()
+        logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {e}")
+        raise
     
-    async def __call__(self, scope, receive, send):
-        """Process request with logging."""
-        if scope["type"] == "http":
-            request = Request(scope, receive)
-            start_time = time.time()
-            
-            # Extract request info
-            method = request.method
-            path = request.url.path
-            client_ip = request.client.host if request.client else "unknown"
-            
-            # Process request
-            async def send_wrapper(message):
-                if message["type"] == "http.response.start":
-                    # Log request completion
-                    duration_ms = (time.time() - start_time) * 1000
-                    status_code = message["status"]
-                    
-                    # Log with context
-                    log_api_request(
-                        logger=logger,
-                        method=method,
-                        path=path,
-                        status_code=status_code,
-                        duration_ms=duration_ms,
-                        user_id=None
-                    )
-                
-                await send(message)
-            
-            await self.app(scope, receive, send_wrapper)
-        else:
-            await self.app(scope, receive, send)
+    logger.info("🎉 AI QA Agent startup complete!")
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 AI QA Agent shutting down...")
+    logger.info("👋 AI QA Agent shutdown complete!")
 
-
-def create_application() -> FastAPI:
-    """Create and configure the FastAPI application with all components."""
+def create_app() -> FastAPI:
+    """Create and configure FastAPI application"""
     settings = get_settings()
     
-    # Create FastAPI app with comprehensive configuration
     app = FastAPI(
-        title="AI QA Agent API",
-        description="""
-        ## Intelligent Test Generation API
-        
-        The AI QA Agent automatically analyzes codebases and generates comprehensive test suites using advanced AI and code analysis techniques.
-        
-        ### Key Features
-        - **Code Analysis**: AST parsing and complexity analysis
-        - **AI Test Generation**: Multiple AI providers (OpenAI, Anthropic)
-        - **Test Validation**: Syntax and execution validation
-        - **Real-time Progress**: WebSocket-based progress tracking
-        - **Quality Scoring**: Comprehensive test quality assessment
-        
-        ### Getting Started
-        1. Use `/api/v1/analysis/repository` to analyze a codebase
-        2. Monitor progress with `/api/v1/analysis/{session_id}/status`
-        3. Generate tests with `/api/v1/generation/generate`
-        4. Validate results with `/api/v1/validation/validate`
-        
-        ### Support
-        - **Health Checks**: `/health/*` endpoints for monitoring
-        - **Documentation**: This interactive documentation
-        - **Status**: Check system status and configuration
-        """,
+        title="AI QA Agent",
+        description="Intelligent test generation system with advanced code analysis",
         version="1.0.0",
-        contact={
-            "name": "AI QA Agent",
-            "url": "https://github.com/yourusername/ai-qa-agent",
-        },
-        license_info={
-            "name": "MIT",
-            "url": "https://opensource.org/licenses/MIT",
-        },
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
-        openapi_url="/openapi.json" if settings.debug else None,
-        servers=[
-            {
-                "url": f"http://{settings.host}:{settings.port}",
-                "description": f"Development server ({settings.environment})"
-            }
-        ] if settings.debug else []
+        lifespan=lifespan
     )
     
-    # Add security middleware
-    if settings.is_production():
-        app.add_middleware(
-            TrustedHostMiddleware,
-            allowed_hosts=settings.allowed_hosts
+    # CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Configure appropriately for production
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    # Request logging middleware
+    @app.middleware("http")
+    async def logging_middleware(request: Request, call_next):
+        start_time = time.time()
+        
+        # Log request
+        logger.info(f"📥 {request.method} {request.url.path}")
+        
+        try:
+            response = await call_next(request)
+            
+            # Log response
+            process_time = time.time() - start_time
+            logger.info(
+                f"📤 {request.method} {request.url.path} "
+                f"-> {response.status_code} ({process_time:.3f}s)"
+            )
+            
+            return response
+            
+        except Exception as e:
+            process_time = time.time() - start_time
+            logger.error(
+                f"💥 {request.method} {request.url.path} "
+                f"-> ERROR ({process_time:.3f}s): {str(e)}"
+            )
+            raise
+    
+    # Global exception handlers
+    @app.exception_handler(QAAgentException)
+    async def qa_agent_exception_handler(request: Request, exc: QAAgentException):
+        logger.error(f"QA Agent error: {exc.message}")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": exc.message,
+                "error_code": exc.error_code,
+                "detail": exc.detail
+            }
         )
     
-    # Add compression middleware
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
-    
-    # Add CORS middleware
-    cors_config = settings.get_cors_config()
-    app.add_middleware(CORSMiddleware, **cors_config)
-    
-    # Add request logging middleware
-    app.middleware("http")(RequestLoggingMiddleware(app))
-    
-    # Add exception handlers
-    app.add_exception_handler(QAAgentException, qa_agent_exception_handler)
-    app.add_exception_handler(ValidationError, validation_exception_handler)
-    app.add_exception_handler(RateLimitError, rate_limit_exception_handler)
-    app.add_exception_handler(Exception, general_exception_handler)
-    
-    # Setup static files and templates
-    static_dir = Path("src/web/static")
-    template_dir = Path("src/web/templates")
-    
-    # Create directories if they don't exist
-    static_dir.mkdir(parents=True, exist_ok=True)
-    template_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Mount static files
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    
-    # Include routers with comprehensive configuration
-    app.include_router(
-        health_router,
-        prefix="/health",
-        tags=["Health & Monitoring"],
-        responses={
-            200: {"description": "Service is healthy"},
-            503: {"description": "Service is unhealthy"},
-            429: {"description": "Too many requests"}
-        }
-    )
-    
-    app.include_router(
-        analysis_router,
-        prefix="/api/v1/analysis",
-        tags=["Code Analysis"],
-        responses={
-            400: {"description": "Invalid request"},
-            422: {"description": "Analysis failed"},
-            429: {"description": "Rate limit exceeded"}
-        }
-    )
-    
-    app.include_router(
-        generation_router,
-        prefix="/api/v1/generation",
-        tags=["Test Generation"],
-        responses={
-            400: {"description": "Invalid request"},
-            422: {"description": "Generation failed"},
-            502: {"description": "AI provider error"}
-        }
-    )
-    
-    # Root endpoint with enhanced landing page
-    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-    async def root(request: Request):
-        """Enhanced landing page with system information."""
-        settings = get_settings()
-        
-        # Get system status
-        try:
-            db_healthy = db_manager.health_check()
-            ai_config = settings.get_ai_config()
-            
-            system_info = {
-                "environment": settings.environment,
-                "debug": settings.debug,
-                "database_status": "connected" if db_healthy else "disconnected",
-                "ai_providers": {
-                    "openai": "configured" if ai_config["openai"]["available"] else "not configured",
-                    "anthropic": "configured" if ai_config["anthropic"]["available"] else "not configured"
-                },
-                "version": "1.0.0"
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        logger.warning(f"Validation error: {exc.errors()}")
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "Validation error",
+                "details": exc.errors()
             }
-        except Exception as e:
-            logger.error(f"Error getting system info: {e}")
-            system_info = {"error": "Unable to load system information"}
-        
-        # Load and return the enhanced HTML template
-        with open("src/web/templates/index.html", "r") as f:
-            return f.read()
+        )
     
-    logger.info("FastAPI application created and configured successfully")
-    return app
-
-
-# Create the application instance
-app = create_application()
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Execute on application startup."""
-    logger.info("🚀 AI QA Agent API starting up...")
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        logger.warning(f"HTTP exception: {exc.status_code} - {exc.detail}")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": exc.detail}
+        )
     
-    try:
-        # Initialize database tables
-        with PerformanceTimer("database_initialization", logger):
-            db_manager.create_tables()
+    @app.exception_handler(Exception)
+    async def general_exception_handler(request: Request, exc: Exception):
+        logger.error(f"Unexpected error: {str(exc)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "detail": "An unexpected error occurred"
+            }
+        )
+    
+    # Include routers
+    app.include_router(health.router)
+    app.include_router(analysis.router)
+    app.include_router(generation.router)
+    
+    # Enhanced root endpoint with interactive dashboard
+    @app.get("/", response_class=HTMLResponse)
+    async def root():
+        """Interactive dashboard for AI QA Agent"""
+        return HTMLResponse(content=f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>AI QA Agent - Intelligent Test Generation</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+            <style>
+                .status-indicator {{
+                    animation: pulse 2s infinite;
+                }}
+                @keyframes pulse {{
+                    0%, 100% {{ opacity: 1; }}
+                    50% {{ opacity: 0.5; }}
+                }}
+                .gradient-bg {{
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                }}
+            </style>
+        </head>
+        <body class="bg-gray-50">
+            <!-- Header -->
+            <div class="gradient-bg text-white p-6">
+                <div class="max-w-6xl mx-auto">
+                    <h1 class="text-4xl font-bold mb-2">🤖 AI QA Agent</h1>
+                    <p class="text-xl opacity-90">Intelligent Test Generation with Advanced Code Analysis</p>
+                    <div class="mt-4 text-sm opacity-75">
+                        Sprint 1.4: Analysis API Integration • Production Ready
+                    </div>
+                </div>
+            </div>
             
-        if db_manager.health_check():
-            logger.info("✅ Database connection verified")
-        else:
-            logger.warning("⚠️ Database health check failed")
-        
-        # Validate AI configuration
-        settings = get_settings()
-        try:
-            settings.validate_ai_config()
-            logger.info("✅ AI configuration validated")
-        except Exception as e:
-            logger.warning(f"⚠️ AI configuration validation failed: {e}")
-        
-        logger.info("🎉 API startup completed successfully")
-        
-    except Exception as e:
-        logger.error(f"❌ API startup failed: {e}")
-        raise
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Execute on application shutdown."""
-    logger.info("🛑 AI QA Agent API shutting down...")
-    logger.info("✅ API shutdown completed successfully")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    settings = get_settings()
-    logger.info(f"🚀 Starting AI QA Agent API server...")
-    
-    uvicorn.run(
-        "src.api.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.reload,
-        log_level=settings.log_level.lower(),
-        workers=1 if settings.reload else settings.workers,
-        access_log=True
-    )
+            <!-- Main Content -->
+            <div class="max-w-6xl mx-auto p-6">
+                <!-- System Status -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4 flex items-center">
+                            <span class="w-3 h-3 bg-green-500 rounded-full mr-2 status-indicator"></span>
+                            System Health
+                        </h3>
+                        <div id="health-status" hx-get="/health/detailed" hx-trigger="load, every 30s" 
+                             class="text-sm text-gray-600">
+                            Loading...
+                        </div>
+                    </div>
+                    
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4 flex items-center">
+                            <span class="w-3 h-3 bg-blue-500 rounded-full mr-2 status-indicator"></span>
+                            Analysis Engine
+                        </h3>
+                        <div id="analysis-status" hx-get="/api/v1/analysis/status" hx-trigger="load, every 30s"
+                             class="text-sm text-gray-600">
+                            Loading...
+                        </div>
+                    </div>
+                    
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4 flex items-center">
+                            <span class="w-3 h-3 bg-purple-500 rounded-full mr-2 status-indicator"></span>
+                            AI Generation
+                        </h3>
+                        <div id="generation-status" hx-get="/api/v1/generation/status" hx-trigger="load, every 30s"
+                             class="text-sm text-gray-600">
+                            Loading...
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Analysis Capabilities -->
+                <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+                    <h2 class="text-2xl font-bold mb-6 text-center">🔍 Advanced Code Analysis Capabilities</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div class="text-center p-4">
+                            <div class="text-3xl mb-2">🌳</div>
+                            <h3 class="font-semibold mb-2">AST Parsing</h3>
+                            <p class="text-sm text-gray-600">Multi-language syntax tree analysis with complexity metrics</p>
+                        </div>
+                        <div class="text-center p-4">
+                            <div class="text-3xl mb-2">📊</div>
+                            <h3 class="font-semibold mb-2">Repository Analysis</h3>
+                            <p class="text-sm text-gray-600">Project-wide structure and architecture pattern detection</p>
+                        </div>
+                        <div class="text-center p-4">
+                            <div class="text-3xl mb-2">🧠</div>
+                            <h3 class="font-semibold mb-2">ML Pattern Detection</h3>
+                            <p class="text-sm text-gray-600">AI-powered clustering, anomaly detection, and design patterns</p>
+                        </div>
+                        <div class="text-center p-4">
+                            <div class="text-3xl mb-2">🕸️</div>
+                            <h3 class="font-semibold mb-2">Graph Analysis</h3>
+                            <p class="text-sm text-gray-600">Dependency graphs, centrality analysis, and architectural insights</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- API Endpoints -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-xl font-semibold mb-4">🔧 Analysis API Endpoints</h3>
+                        <div class="space-y-2 text-sm">
+                            <div class="flex items-center">
+                                <span class="bg-green-100 text-green-800 px-2 py-1 rounded mr-2">POST</span>
+                                <code>/api/v1/analysis/repository</code>
+                            </div>
+                            <div class="flex items-center">
+                                <span class="bg-green-100 text-green-800 px-2 py-1 rounded mr-2">POST</span>
+                                <code>/api/v1/analysis/upload</code>
+                            </div>
+                            <div class="flex items-center">
+                                <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded mr-2">GET</span>
+                                <code>/api/v1/analysis/sessions</code>
+                            </div>
+                            <div class="flex items-center">
+                                <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded mr-2">GET</span>
+                                <code>/api/v1/analysis/sessions/{{id}}/components</code>
+                            </div>
+                            <div class="flex items-center">
+                                <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded mr-2">GET</span>
+                                <code>/api/v1/analysis/sessions/{{id}}/patterns</code>
+                            </div>
+                            <div class="flex items-center">
+                                <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded mr-2">GET</span>
+                                <code>/api/v1/analysis/sessions/{{id}}/quality</code>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-xl font-semibold mb-4">📊 Analysis Features</h3>
+                        <ul class="space-y-2 text-sm">
+                            <li class="flex items-center">
+                                <span class="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+                                Real-time progress tracking with background tasks
+                            </li>
+                            <li class="flex items-center">
+                                <span class="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+                                Archive upload support (.zip, .tar.gz, .tar)
+                            </li>
+                            <li class="flex items-center">
+                                <span class="w-2 h-2 bg-green-500 rounded-full
