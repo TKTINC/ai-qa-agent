@@ -100,3 +100,9 @@ if __name__ == "__main__":
         reload=settings.debug,
         log_level="info"
     )
+
+# Sprint 2.4 - Agent API Routes
+from .routes.agent.conversation import router as agent_conversation_router
+
+# Include agent routes
+app.include_router(agent_conversation_router, tags=["Agent System"])
