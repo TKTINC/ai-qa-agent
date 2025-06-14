@@ -1,694 +1,563 @@
 """
-Analysis API Routes - Complete REST API for code analysis
-Integrates AST parsing, repository analysis, ML pattern detection, and graph analysis
+Analysis API Routes - Complete implementation with background tasks
+AI QA Agent - Enhanced Sprint 1.4
 """
-
+from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional, Union
+import asyncio
 import uuid
 import os
-import tempfile
 from datetime import datetime
-from typing import List, Optional, Dict, Any
-from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Query, Depends
-from fastapi.responses import JSONResponse
-
-from src.api.models.analysis_models import (
-    RepositoryAnalysisRequest,
-    UploadAnalysisRequest, 
-    AnalysisProgressResponse,
-    AnalysisSessionResponse,
-    AnalysisSessionListResponse,
-    CodeComponentResponse,
-    PatternResponse,
-    QualityMetricsResponse,
-    MLAnalysisResponse,
-    GraphAnalysisResponse,
-    ComprehensiveAnalysisResponse,
-    AnalysisStatus,
-    Language,
-    ErrorResponse
-)
-from src.analysis.analysis_service import analysis_service, AnalysisProgress, ComprehensiveAnalysisResult
-from src.analysis.ast_parser import Language as ASTLanguage
 from src.core.logging import get_logger
-from src.core.exceptions import AnalysisError
+from src.core.exceptions import QAAgentError
+from src.analysis.ast_parser import PythonASTParser
+from src.analysis.repository_analyzer import RepositoryAnalyzer
+from src.analysis.ml_pattern_detector import MLPatternDetector
+from src.analysis.graph_pattern_analyzer import GraphPatternAnalyzer
+from src.tasks.analysis_tasks import AnalysisTaskManager
 
 logger = get_logger(__name__)
-
 router = APIRouter(prefix="/api/v1/analysis", tags=["analysis"])
 
-def convert_language(api_language: Language) -> ASTLanguage:
-    """Convert API language enum to AST language enum"""
-    mapping = {
-        Language.PYTHON: ASTLanguage.PYTHON,
-        Language.JAVASCRIPT: ASTLanguage.JAVASCRIPT,
-        Language.TYPESCRIPT: ASTLanguage.TYPESCRIPT
-    }
-    return mapping.get(api_language, ASTLanguage.PYTHON)
+# Analysis task manager for background processing
+task_manager = AnalysisTaskManager()
 
-def convert_progress_to_response(progress: AnalysisProgress) -> AnalysisProgressResponse:
-    """Convert internal progress to API response"""
-    status = AnalysisStatus.ANALYZING
-    if progress.error_message:
-        status = AnalysisStatus.FAILED
-    elif progress.progress_percentage >= 100:
-        status = AnalysisStatus.COMPLETED
-    elif progress.completed_steps == 0:
-        status = AnalysisStatus.PENDING
-    
-    return AnalysisProgressResponse(
-        session_id=progress.session_id,
-        status=status,
-        total_steps=progress.total_steps,
-        completed_steps=progress.completed_steps,
-        current_step=progress.current_step,
-        progress_percentage=progress.progress_percentage,
-        start_time=datetime.fromtimestamp(progress.start_time),
-        estimated_completion=datetime.fromtimestamp(progress.estimated_completion) if progress.estimated_completion else None,
-        error_message=progress.error_message
-    )
+# Request/Response Models
+class AnalysisRequest(BaseModel):
+    """Request model for code analysis"""
+    file_path: Optional[str] = None
+    repository_path: Optional[str] = None
+    code_content: Optional[str] = None
+    analysis_type: str = Field(..., description="Type of analysis: file, repository, or content")
+    options: Dict[str, Any] = Field(default_factory=dict)
 
-def convert_components_to_response(components: List) -> List[CodeComponentResponse]:
-    """Convert internal components to API response format"""
-    responses = []
-    for component in components:
-        try:
-            response = CodeComponentResponse(
-                name=component.name,
-                type=component.type.value,
-                file_path=component.file_path,
-                location={
-                    "start_line": component.location.start_line,
-                    "end_line": component.location.end_line,
-                    "start_column": component.location.start_column,
-                    "end_column": component.location.end_column
-                },
-                parameters=[
-                    {
-                        "name": param.name,
-                        "type_annotation": param.type_annotation,
-                        "default_value": param.default_value,
-                        "is_keyword_only": param.is_keyword_only,
-                        "is_positional_only": param.is_positional_only
-                    } for param in component.parameters
-                ],
-                return_type=component.return_type,
-                is_async=component.is_async,
-                is_generator=component.is_generator,
-                complexity={
-                    "cyclomatic_complexity": component.complexity.cyclomatic_complexity,
-                    "cognitive_complexity": component.complexity.cognitive_complexity,
-                    "maintainability_index": component.complexity.maintainability_index
-                },
-                quality={
-                    "is_testable": component.quality.is_testable,
-                    "testability_score": component.quality.testability_score,
-                    "test_priority": component.quality.test_priority,
-                    "maintainability_index": component.quality.maintainability_index,
-                    "lines_of_code": component.quality.lines_of_code
-                },
-                documentation={
-                    "has_docstring": component.documentation.has_docstring,
-                    "docstring_content": component.documentation.docstring_content,
-                    "comment_lines": component.documentation.comment_lines
-                },
-                dependencies=component.dependencies.function_calls,
-                source_code=component.source_code[:1000] if component.source_code else None  # Truncate for API
-            )
-            responses.append(response)
-        except Exception as e:
-            logger.warning(f"Error converting component {getattr(component, 'name', 'unknown')}: {e}")
-            continue
-    
-    return responses
+class ComponentInfo(BaseModel):
+    """Component information model"""
+    name: str
+    type: str
+    start_line: int
+    end_line: int
+    complexity: Dict[str, float]
+    quality_metrics: Dict[str, float]
+    dependencies: List[str]
 
-@router.post("/repository", response_model=AnalysisProgressResponse)
-async def start_repository_analysis(
-    request: RepositoryAnalysisRequest,
+class AnalysisResult(BaseModel):
+    """Analysis result model"""
+    analysis_id: str
+    analysis_type: str
+    status: str
+    components: List[ComponentInfo]
+    quality_summary: Dict[str, Any]
+    patterns_detected: List[Dict[str, Any]]
+    recommendations: List[str]
+    execution_time: float
+    timestamp: datetime
+
+class TaskStatus(BaseModel):
+    """Background task status model"""
+    task_id: str
+    status: str  # pending, running, completed, failed
+    progress: float  # 0.0 to 1.0
+    message: str
+    result: Optional[AnalysisResult] = None
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+class ProgressUpdate(BaseModel):
+    """Progress update model for WebSocket"""
+    task_id: str
+    progress: float
+    message: str
+    details: Optional[Dict[str, Any]] = None
+
+# WebSocket connection manager for real-time progress
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.task_connections: Dict[str, List[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, task_id: str = None):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        if task_id:
+            if task_id not in self.task_connections:
+                self.task_connections[task_id] = []
+            self.task_connections[task_id].append(websocket)
+        logger.info(f"WebSocket connected for task: {task_id}")
+
+    def disconnect(self, websocket: WebSocket, task_id: str = None):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        if task_id and task_id in self.task_connections:
+            if websocket in self.task_connections[task_id]:
+                self.task_connections[task_id].remove(websocket)
+            if not self.task_connections[task_id]:
+                del self.task_connections[task_id]
+        logger.info(f"WebSocket disconnected for task: {task_id}")
+
+    async def send_progress_update(self, task_id: str, progress: ProgressUpdate):
+        if task_id in self.task_connections:
+            disconnected = []
+            for connection in self.task_connections[task_id]:
+                try:
+                    await connection.send_json(progress.dict())
+                except Exception as e:
+                    logger.warning(f"Failed to send progress update: {e}")
+                    disconnected.append(connection)
+            
+            # Clean up disconnected connections
+            for conn in disconnected:
+                self.disconnect(conn, task_id)
+
+manager = ConnectionManager()
+
+# Analysis Endpoints
+
+@router.post("/analyze", response_model=TaskStatus)
+async def start_analysis(
+    request: AnalysisRequest,
     background_tasks: BackgroundTasks
-) -> AnalysisProgressResponse:
-    """
-    Start comprehensive analysis of a repository
-    Returns session ID and progress tracker
-    """
+) -> TaskStatus:
+    """Start analysis task with background processing"""
     try:
-        # Validate repository path
-        repo_path = Path(request.repository_path)
-        if not repo_path.exists():
+        # Validate request
+        if not any([request.file_path, request.repository_path, request.code_content]):
             raise HTTPException(
                 status_code=400,
-                detail=f"Repository path does not exist: {request.repository_path}"
+                detail="Must provide either file_path, repository_path, or code_content"
             )
-        
-        if not repo_path.is_dir():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Repository path is not a directory: {request.repository_path}"
-            )
-        
-        # Generate session ID
-        session_id = str(uuid.uuid4())
-        
-        # Convert language
-        ast_language = convert_language(request.language)
-        
-        # Start analysis
-        progress = await analysis_service.start_analysis(
-            session_id=session_id,
-            repository_path=str(repo_path.absolute()),
-            language=ast_language
-        )
-        
-        return convert_progress_to_response(progress)
-        
-    except AnalysisError as e:
-        logger.error(f"Analysis error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Unexpected error starting repository analysis: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.post("/upload", response_model=AnalysisProgressResponse)
-async def upload_and_analyze(
-    file: UploadFile = File(..., description="Repository archive (.zip, .tar.gz, .tar)"),
-    language: Language = Query(Language.PYTHON, description="Primary programming language")
-) -> AnalysisProgressResponse:
-    """
-    Upload and analyze repository archive
-    Supports .zip, .tar.gz, and .tar formats
-    """
-    try:
-        # Validate file type
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="No filename provided")
-        
-        allowed_extensions = ['.zip', '.tar.gz', '.tgz', '.tar']
-        if not any(file.filename.endswith(ext) for ext in allowed_extensions):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
-            )
-        
-        # Check file size (50MB limit)
-        content = await file.read()
-        if len(content) > 50 * 1024 * 1024:  # 50MB
-            raise HTTPException(
-                status_code=413,
-                detail="File too large. Maximum size is 50MB"
-            )
-        
-        # Generate session ID
-        session_id = str(uuid.uuid4())
-        
-        # Convert language
-        ast_language = convert_language(language)
-        
-        # Start analysis
-        progress = await analysis_service.analyze_uploaded_archive(
-            session_id=session_id,
-            archive_content=content,
-            filename=file.filename,
-            language=ast_language
+        # Create task
+        task_id = str(uuid.uuid4())
+        task_status = TaskStatus(
+            task_id=task_id,
+            status="pending",
+            progress=0.0,
+            message="Analysis task created",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
-        
-        return convert_progress_to_response(progress)
-        
-    except AnalysisError as e:
-        logger.error(f"Analysis error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Unexpected error in upload analysis: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.get("/sessions", response_model=AnalysisSessionListResponse)
-async def list_analysis_sessions(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(10, ge=1, le=100, description="Items per page")
-) -> AnalysisSessionListResponse:
-    """
-    List analysis sessions with pagination
-    Returns session metadata and progress information
-    """
-    try:
-        # Get all session IDs
-        session_ids = analysis_service.list_sessions()
-        total_count = len(session_ids)
-        
-        # Calculate pagination
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        paginated_ids = session_ids[start_idx:end_idx]
-        
-        # Build session responses
-        sessions = []
-        for session_id in paginated_ids:
-            progress = analysis_service.get_progress(session_id)
-            result = analysis_service.get_result(session_id)
-            
-            if progress:
-                status = AnalysisStatus.ANALYZING
-                if progress.error_message:
-                    status = AnalysisStatus.FAILED
-                elif progress.progress_percentage >= 100:
-                    status = AnalysisStatus.COMPLETED
-                elif progress.completed_steps == 0:
-                    status = AnalysisStatus.PENDING
-                
-                session_response = AnalysisSessionResponse(
-                    session_id=session_id,
-                    repository_path=result.repository_path if result else "Unknown",
-                    language=Language.PYTHON,  # Default, could be stored in progress
-                    status=status,
-                    progress=convert_progress_to_response(progress),
-                    total_files=result.total_files if result else 0,
-                    analyzed_files=result.analyzed_files if result else 0,
-                    total_components=result.total_components if result else 0,
-                    analysis_duration=result.analysis_duration if result else None,
-                    created_at=datetime.fromtimestamp(progress.start_time),
-                    completed_at=datetime.fromtimestamp(progress.estimated_completion) if progress.estimated_completion and status == AnalysisStatus.COMPLETED else None
-                )
-                sessions.append(session_response)
-        
-        return AnalysisSessionListResponse(
-            sessions=sessions,
-            total_count=total_count,
-            page=page,
-            page_size=page_size,
-            has_next=end_idx < total_count,
-            has_previous=page > 1
+        # Store task status
+        await task_manager.store_task_status(task_status)
+
+        # Start background analysis
+        background_tasks.add_task(
+            perform_analysis_task,
+            task_id,
+            request
         )
-        
-    except Exception as e:
-        logger.error(f"Error listing analysis sessions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.get("/sessions/{session_id}", response_model=AnalysisProgressResponse)
-async def get_analysis_session(session_id: str) -> AnalysisProgressResponse:
-    """
-    Get detailed analysis session progress and status
-    Includes real-time progress updates and error information
-    """
+        logger.info(f"Started analysis task: {task_id}")
+        return task_status
+
+    except Exception as e:
+        logger.error(f"Failed to start analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/tasks/{task_id}", response_model=TaskStatus)
+async def get_task_status(task_id: str) -> TaskStatus:
+    """Get status of analysis task"""
     try:
-        progress = analysis_service.get_progress(session_id)
-        if not progress:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found: {session_id}"
-            )
-        
-        return convert_progress_to_response(progress)
-        
+        task_status = await task_manager.get_task_status(task_id)
+        if not task_status:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return task_status
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting analysis session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Failed to get task status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/sessions/{session_id}")
-async def delete_analysis_session(session_id: str) -> Dict[str, str]:
-    """
-    Delete analysis session and clean up resources
-    Removes progress tracking and temporary files
-    """
+@router.get("/tasks", response_model=List[TaskStatus])
+async def get_all_tasks(
+    status: Optional[str] = None,
+    limit: int = 50
+) -> List[TaskStatus]:
+    """Get all analysis tasks with optional filtering"""
     try:
-        success = analysis_service.cleanup_session(session_id)
+        tasks = await task_manager.get_all_tasks(status=status, limit=limit)
+        return tasks
+    except Exception as e:
+        logger.error(f"Failed to get tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/tasks/{task_id}")
+async def cancel_task(task_id: str) -> Dict[str, str]:
+    """Cancel running analysis task"""
+    try:
+        success = await task_manager.cancel_task(task_id)
         if not success:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found: {session_id}"
-            )
+            raise HTTPException(status_code=404, detail="Task not found or cannot be cancelled")
         
-        return {"message": f"Session {session_id} deleted successfully"}
-        
+        return {"message": f"Task {task_id} cancelled successfully"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting analysis session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Failed to cancel task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/sessions/{session_id}/components", response_model=List[CodeComponentResponse])
-async def get_session_components(
-    session_id: str,
-    component_type: Optional[str] = Query(None, description="Filter by component type"),
-    min_complexity: Optional[int] = Query(None, description="Minimum complexity filter"),
-    max_complexity: Optional[int] = Query(None, description="Maximum complexity filter"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of components")
-) -> List[CodeComponentResponse]:
-    """
-    Get extracted code components from analysis session
-    Supports filtering by type, complexity, and pagination
-    """
+@router.websocket("/tasks/{task_id}/progress")
+async def websocket_progress(websocket: WebSocket, task_id: str):
+    """WebSocket endpoint for real-time progress updates"""
+    await manager.connect(websocket, task_id)
     try:
-        result = analysis_service.get_result(session_id)
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found or not completed: {session_id}"
+        # Send current status if task exists
+        task_status = await task_manager.get_task_status(task_id)
+        if task_status:
+            progress = ProgressUpdate(
+                task_id=task_id,
+                progress=task_status.progress,
+                message=task_status.message
             )
-        
-        components = result.components
-        
-        # Apply filters
-        if component_type:
-            components = [c for c in components if c.type.value == component_type]
-        
-        if min_complexity is not None:
-            components = [c for c in components if c.complexity.cyclomatic_complexity >= min_complexity]
-        
-        if max_complexity is not None:
-            components = [c for c in components if c.complexity.cyclomatic_complexity <= max_complexity]
-        
-        # Apply limit
-        components = components[:limit]
-        
-        return convert_components_to_response(components)
-        
-    except HTTPException:
-        raise
+            await websocket.send_json(progress.dict())
+
+        # Keep connection alive and handle any messages
+        while True:
+            try:
+                data = await websocket.receive_text()
+                # Echo back for connection health check
+                await websocket.send_text(f"Echo: {data}")
+            except WebSocketDisconnect:
+                break
     except Exception as e:
-        logger.error(f"Error getting components for session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        manager.disconnect(websocket, task_id)
 
-@router.get("/sessions/{session_id}/patterns", response_model=List[PatternResponse])
-async def get_session_patterns(
-    session_id: str,
-    pattern_type: Optional[str] = Query(None, description="Filter by pattern type"),
-    min_confidence: Optional[float] = Query(None, description="Minimum confidence filter")
-) -> List[PatternResponse]:
-    """
-    Get detected patterns from analysis session
-    Includes design patterns, anti-patterns, and architectural patterns
-    """
-    try:
-        result = analysis_service.get_result(session_id)
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found or not completed: {session_id}"
-            )
-        
-        patterns = []
-        
-        # Add ML detected patterns
-        if result.ml_analysis and result.ml_analysis.detected_patterns:
-            for pattern in result.ml_analysis.detected_patterns:
-                pattern_response = PatternResponse(
-                    pattern_type="design_pattern",
-                    pattern_name=pattern.pattern_name,
-                    confidence=pattern.confidence,
-                    components_involved=pattern.components_involved,
-                    description=pattern.description,
-                    evidence=pattern.evidence
-                )
-                patterns.append(pattern_response)
-        
-        # Add graph analysis patterns
-        if result.graph_analysis:
-            # Anti-patterns
-            if result.graph_analysis.anti_patterns:
-                for pattern in result.graph_analysis.anti_patterns:
-                    pattern_response = PatternResponse(
-                        pattern_type="anti_pattern",
-                        pattern_name=pattern.pattern_name,
-                        confidence=pattern.confidence,
-                        components_involved=pattern.components_involved,
-                        description=pattern.description,
-                        evidence=pattern.evidence,
-                        severity=getattr(pattern, 'severity', None)
-                    )
-                    patterns.append(pattern_response)
-            
-            # Architectural patterns
-            if result.graph_analysis.architectural_patterns:
-                for pattern in result.graph_analysis.architectural_patterns:
-                    pattern_response = PatternResponse(
-                        pattern_type="architectural_pattern",
-                        pattern_name=pattern.pattern_name,
-                        confidence=pattern.confidence,
-                        components_involved=pattern.components_involved,
-                        description=pattern.description,
-                        evidence=pattern.evidence
-                    )
-                    patterns.append(pattern_response)
-        
-        # Apply filters
-        if pattern_type:
-            patterns = [p for p in patterns if p.pattern_type == pattern_type]
-        
-        if min_confidence is not None:
-            patterns = [p for p in patterns if p.confidence >= min_confidence]
-        
-        return patterns
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting patterns for session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+# Quick Analysis Endpoints (synchronous for simple cases)
 
-@router.get("/sessions/{session_id}/quality", response_model=QualityMetricsResponse)
-async def get_session_quality_metrics(session_id: str) -> QualityMetricsResponse:
-    """
-    Get comprehensive quality metrics for analysis session
-    Includes complexity, testability, documentation, and architecture metrics
-    """
+@router.post("/analyze/file", response_model=AnalysisResult)
+async def analyze_file_sync(
+    file_path: str,
+    include_ml_analysis: bool = False
+) -> AnalysisResult:
+    """Synchronous file analysis for quick results"""
     try:
-        result = analysis_service.get_result(session_id)
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found or not completed: {session_id}"
-            )
-        
-        return QualityMetricsResponse(**result.quality_metrics)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting quality metrics for session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
 
-@router.get("/sessions/{session_id}/ml-analysis", response_model=MLAnalysisResponse)
-async def get_session_ml_analysis(session_id: str) -> MLAnalysisResponse:
-    """
-    Get ML analysis results including clustering, anomaly detection, and pattern recognition
-    """
-    try:
-        result = analysis_service.get_result(session_id)
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found or not completed: {session_id}"
-            )
+        start_time = datetime.utcnow()
         
-        if not result.ml_analysis:
-            return MLAnalysisResponse()
+        # Parse the file
+        parser = PythonASTParser()
+        components = await parser.parse_file(file_path)
         
-        ml_result = result.ml_analysis
-        
-        return MLAnalysisResponse(
-            clusters=[
-                {
-                    "cluster_id": cluster.cluster_id,
-                    "cluster_type": cluster.cluster_type,
-                    "components": cluster.components,
-                    "centroid_features": cluster.centroid_features,
-                    "similarity_score": cluster.similarity_score,
-                    "description": cluster.description
-                } for cluster in ml_result.clusters
-            ],
-            anomalies=[
-                {
-                    "component_name": anomaly.component_name,
-                    "anomaly_score": anomaly.anomaly_score,
-                    "anomaly_type": anomaly.anomaly_type,
-                    "description": anomaly.description,
-                    "explanation": anomaly.explanation
-                } for anomaly in ml_result.anomalies
-            ],
-            detected_patterns=[
-                {
-                    "pattern_type": "design_pattern",
-                    "pattern_name": pattern.pattern_name,
-                    "confidence": pattern.confidence,
-                    "components_involved": pattern.components_involved,
-                    "description": pattern.description,
-                    "evidence": pattern.evidence
-                } for pattern in ml_result.detected_patterns
-            ],
-            feature_importance=ml_result.feature_importance,
-            model_performance=ml_result.model_performance
+        # Convert components to response format
+        component_infos = []
+        for comp in components:
+            component_infos.append(ComponentInfo(
+                name=comp.name,
+                type=comp.type,
+                start_line=comp.start_line,
+                end_line=comp.end_line,
+                complexity=comp.complexity,
+                quality_metrics=comp.quality_metrics,
+                dependencies=comp.dependencies
+            ))
+
+        # Basic quality summary
+        quality_summary = {
+            "total_components": len(components),
+            "average_complexity": sum(c.complexity.get("cyclomatic", 0) for c in components) / len(components) if components else 0,
+            "average_testability": sum(c.quality_metrics.get("testability_score", 0) for c in components) / len(components) if components else 0,
+            "high_priority_components": len([c for c in components if c.quality_metrics.get("test_priority", 0) >= 4])
+        }
+
+        patterns_detected = []
+        recommendations = []
+
+        # Optional ML analysis
+        if include_ml_analysis:
+            try:
+                ml_detector = MLPatternDetector()
+                ml_results = await ml_detector.analyze_components(components)
+                patterns_detected = ml_results.get("patterns", [])
+                recommendations.extend(ml_results.get("recommendations", []))
+            except Exception as e:
+                logger.warning(f"ML analysis failed: {e}")
+
+        execution_time = (datetime.utcnow() - start_time).total_seconds()
+
+        result = AnalysisResult(
+            analysis_id=str(uuid.uuid4()),
+            analysis_type="file",
+            status="completed",
+            components=component_infos,
+            quality_summary=quality_summary,
+            patterns_detected=patterns_detected,
+            recommendations=recommendations,
+            execution_time=execution_time,
+            timestamp=start_time
         )
-        
+
+        logger.info(f"Completed file analysis: {file_path} in {execution_time:.2f}s")
+        return result
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting ML analysis for session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"File analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/sessions/{session_id}/graph-analysis", response_model=GraphAnalysisResponse)
-async def get_session_graph_analysis(session_id: str) -> GraphAnalysisResponse:
-    """
-    Get graph analysis results including dependency graphs, centrality analysis, and architectural insights
-    """
+@router.post("/analyze/content", response_model=AnalysisResult)
+async def analyze_content_sync(
+    code_content: str,
+    language: str = "python",
+    include_complexity: bool = True
+) -> AnalysisResult:
+    """Synchronous content analysis for code snippets"""
     try:
-        result = analysis_service.get_result(session_id)
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found or not completed: {session_id}"
-            )
-        
-        if not result.graph_analysis:
-            return GraphAnalysisResponse()
-        
-        graph_result = result.graph_analysis
-        
-        return GraphAnalysisResponse(
-            centrality_analysis=[
-                {
-                    "component_name": centrality.component_name,
-                    "degree_centrality": centrality.degree_centrality,
-                    "betweenness_centrality": centrality.betweenness_centrality,
-                    "closeness_centrality": centrality.closeness_centrality,
-                    "eigenvector_centrality": centrality.eigenvector_centrality
-                } for centrality in graph_result.centrality_analysis
-            ],
-            detected_cycles=graph_result.cycles,
-            architectural_layers=graph_result.layers,
-            anti_patterns=[
-                {
-                    "pattern_type": "anti_pattern",
-                    "pattern_name": pattern.pattern_name,
-                    "confidence": pattern.confidence,
-                    "components_involved": pattern.components_involved,
-                    "description": pattern.description,
-                    "evidence": pattern.evidence,
-                    "severity": getattr(pattern, 'severity', None)
-                } for pattern in graph_result.anti_patterns
-            ],
-            architectural_patterns=[
-                {
-                    "pattern_type": "architectural_pattern",
-                    "pattern_name": pattern.pattern_name,
-                    "confidence": pattern.confidence,
-                    "components_involved": pattern.components_involved,
-                    "description": pattern.description,
-                    "evidence": pattern.evidence
-                } for pattern in graph_result.architectural_patterns
-            ],
-            modularity_score=graph_result.modularity_score
+        start_time = datetime.utcnow()
+
+        if language.lower() != "python":
+            raise HTTPException(status_code=400, detail="Only Python analysis supported currently")
+
+        # Parse the content
+        parser = PythonASTParser()
+        components = await parser.parse_code_string(code_content)
+
+        # Convert to response format
+        component_infos = []
+        for comp in components:
+            component_infos.append(ComponentInfo(
+                name=comp.name,
+                type=comp.type,
+                start_line=comp.start_line,
+                end_line=comp.end_line,
+                complexity=comp.complexity if include_complexity else {},
+                quality_metrics=comp.quality_metrics,
+                dependencies=comp.dependencies
+            ))
+
+        quality_summary = {
+            "total_components": len(components),
+            "languages_detected": [language],
+            "analysis_scope": "content"
+        }
+
+        execution_time = (datetime.utcnow() - start_time).total_seconds()
+
+        result = AnalysisResult(
+            analysis_id=str(uuid.uuid4()),
+            analysis_type="content",
+            status="completed",
+            components=component_infos,
+            quality_summary=quality_summary,
+            patterns_detected=[],
+            recommendations=[],
+            execution_time=execution_time,
+            timestamp=start_time
         )
-        
+
+        logger.info(f"Completed content analysis in {execution_time:.2f}s")
+        return result
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting graph analysis for session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Content analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/sessions/{session_id}/summary", response_model=ComprehensiveAnalysisResponse)
-async def get_session_summary(session_id: str) -> ComprehensiveAnalysisResponse:
-    """
-    Get comprehensive analysis summary for session
-    Includes all key metrics and statistics without detailed component data
-    """
+# Background task implementation
+async def perform_analysis_task(task_id: str, request: AnalysisRequest):
+    """Perform analysis task in background with progress updates"""
     try:
-        result = analysis_service.get_result(session_id)
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis session not found or not completed: {session_id}"
-            )
+        # Update task status to running
+        await update_task_progress(task_id, 0.1, "Starting analysis...")
+
+        if request.analysis_type == "file" and request.file_path:
+            result = await analyze_file_background(task_id, request.file_path, request.options)
+        elif request.analysis_type == "repository" and request.repository_path:
+            result = await analyze_repository_background(task_id, request.repository_path, request.options)
+        elif request.analysis_type == "content" and request.code_content:
+            result = await analyze_content_background(task_id, request.code_content, request.options)
+        else:
+            raise ValueError("Invalid analysis request")
+
+        # Mark task as completed
+        await complete_task(task_id, result)
+
+    except Exception as e:
+        logger.error(f"Analysis task {task_id} failed: {e}")
+        await fail_task(task_id, str(e))
+
+async def analyze_file_background(task_id: str, file_path: str, options: Dict[str, Any]) -> AnalysisResult:
+    """Background file analysis with full capabilities"""
+    await update_task_progress(task_id, 0.2, f"Parsing file: {file_path}")
+    
+    # Parse file
+    parser = PythonASTParser()
+    components = await parser.parse_file(file_path)
+    
+    await update_task_progress(task_id, 0.5, "Running ML analysis...")
+    
+    # ML pattern detection
+    ml_detector = MLPatternDetector()
+    ml_results = await ml_detector.analyze_components(components)
+    
+    await update_task_progress(task_id, 0.8, "Generating recommendations...")
+    
+    # Create result
+    result = AnalysisResult(
+        analysis_id=str(uuid.uuid4()),
+        analysis_type="file",
+        status="completed",
+        components=[ComponentInfo(
+            name=c.name,
+            type=c.type,
+            start_line=c.start_line,
+            end_line=c.end_line,
+            complexity=c.complexity,
+            quality_metrics=c.quality_metrics,
+            dependencies=c.dependencies
+        ) for c in components],
+        quality_summary=ml_results.get("quality_summary", {}),
+        patterns_detected=ml_results.get("patterns", []),
+        recommendations=ml_results.get("recommendations", []),
+        execution_time=0.0,  # Will be calculated
+        timestamp=datetime.utcnow()
+    )
+    
+    return result
+
+async def analyze_repository_background(task_id: str, repo_path: str, options: Dict[str, Any]) -> AnalysisResult:
+    """Background repository analysis with full capabilities"""
+    await update_task_progress(task_id, 0.2, f"Analyzing repository: {repo_path}")
+    
+    # Repository analysis
+    repo_analyzer = RepositoryAnalyzer()
+    repo_results = await repo_analyzer.analyze_repository(repo_path)
+    
+    await update_task_progress(task_id, 0.6, "Running ML pattern detection...")
+    
+    # ML analysis on all components
+    all_components = []
+    for file_result in repo_results.files:
+        all_components.extend(file_result.components)
+    
+    ml_detector = MLPatternDetector()
+    ml_results = await ml_detector.analyze_components(all_components)
+    
+    await update_task_progress(task_id, 0.9, "Generating final report...")
+    
+    # Create comprehensive result
+    result = AnalysisResult(
+        analysis_id=str(uuid.uuid4()),
+        analysis_type="repository",
+        status="completed",
+        components=[ComponentInfo(
+            name=c.name,
+            type=c.type,
+            start_line=c.start_line,
+            end_line=c.end_line,
+            complexity=c.complexity,
+            quality_metrics=c.quality_metrics,
+            dependencies=c.dependencies
+        ) for c in all_components],
+        quality_summary={
+            **repo_results.summary,
+            **ml_results.get("quality_summary", {})
+        },
+        patterns_detected=ml_results.get("patterns", []),
+        recommendations=ml_results.get("recommendations", []),
+        execution_time=0.0,
+        timestamp=datetime.utcnow()
+    )
+    
+    return result
+
+async def analyze_content_background(task_id: str, content: str, options: Dict[str, Any]) -> AnalysisResult:
+    """Background content analysis"""
+    await update_task_progress(task_id, 0.3, "Parsing code content...")
+    
+    parser = PythonASTParser()
+    components = await parser.parse_code_string(content)
+    
+    await update_task_progress(task_id, 0.8, "Analyzing patterns...")
+    
+    result = AnalysisResult(
+        analysis_id=str(uuid.uuid4()),
+        analysis_type="content",
+        status="completed",
+        components=[ComponentInfo(
+            name=c.name,
+            type=c.type,
+            start_line=c.start_line,
+            end_line=c.end_line,
+            complexity=c.complexity,
+            quality_metrics=c.quality_metrics,
+            dependencies=c.dependencies
+        ) for c in components],
+        quality_summary={
+            "total_components": len(components),
+            "analysis_scope": "content"
+        },
+        patterns_detected=[],
+        recommendations=[],
+        execution_time=0.0,
+        timestamp=datetime.utcnow()
+    )
+    
+    return result
+
+# Helper functions for task management
+async def update_task_progress(task_id: str, progress: float, message: str):
+    """Update task progress and notify WebSocket connections"""
+    task_status = await task_manager.get_task_status(task_id)
+    if task_status:
+        task_status.progress = progress
+        task_status.message = message
+        task_status.status = "running"
+        task_status.updated_at = datetime.utcnow()
         
-        # Build repository structure response
-        repo_structure = None
-        if result.repository_analysis:
-            repo_structure = {
-                "total_files": result.total_files,
-                "analyzed_files": result.analyzed_files,
-                "total_size": result.repository_analysis.structure.total_size,
-                "directory_depth": result.repository_analysis.structure.max_depth,
-                "file_types": result.repository_analysis.structure.file_types
-            }
+        await task_manager.store_task_status(task_status)
         
-        return ComprehensiveAnalysisResponse(
-            session_id=result.session_id,
-            repository_path=result.repository_path,
-            language=Language.PYTHON,  # Convert from AST language
-            total_files=result.total_files,
-            analyzed_files=result.analyzed_files,
-            total_components=result.total_components,
-            analysis_duration=result.analysis_duration,
-            quality_metrics=QualityMetricsResponse(**result.quality_metrics),
-            complexity_stats=result.complexity_stats,
-            testability_stats=result.testability_stats,
-            pattern_summary=result.pattern_summary,
-            repository_structure=repo_structure
+        # Send WebSocket update
+        progress_update = ProgressUpdate(
+            task_id=task_id,
+            progress=progress,
+            message=message
         )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting analysis summary for session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        await manager.send_progress_update(task_id, progress_update)
 
-# Health check endpoints for analysis service
-@router.get("/status")
-async def analysis_service_status() -> Dict[str, Any]:
-    """
-    Get analysis service status and capabilities
-    """
-    try:
-        active_sessions = len(analysis_service.list_sessions())
+async def complete_task(task_id: str, result: AnalysisResult):
+    """Mark task as completed with result"""
+    task_status = await task_manager.get_task_status(task_id)
+    if task_status:
+        task_status.status = "completed"
+        task_status.progress = 1.0
+        task_status.message = "Analysis completed successfully"
+        task_status.result = result
+        task_status.updated_at = datetime.utcnow()
         
-        return {
-            "service": "analysis",
-            "status": "healthy",
-            "active_sessions": active_sessions,
-            "capabilities": {
-                "languages": ["python", "javascript", "typescript"],
-                "analysis_types": ["ast_parsing", "repository_analysis", "ml_patterns", "graph_analysis"],
-                "supported_formats": [".zip", ".tar.gz", ".tar"],
-                "max_file_size_mb": 50,
-                "max_concurrent_sessions": 10
-            },
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error getting analysis service status: {e}")
-        return {
-            "service": "analysis",
-            "status": "degraded",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        await task_manager.store_task_status(task_status)
+        
+        progress_update = ProgressUpdate(
+            task_id=task_id,
+            progress=1.0,
+            message="Analysis completed"
+        )
+        await manager.send_progress_update(task_id, progress_update)
 
-@router.get("/test")
-async def test_analysis_service() -> Dict[str, Any]:
-    """
-    Test analysis service functionality with minimal operations
-    """
-    try:
-        # Test basic service functionality
-        session_ids = analysis_service.list_sessions()
+async def fail_task(task_id: str, error: str):
+    """Mark task as failed with error"""
+    task_status = await task_manager.get_task_status(task_id)
+    if task_status:
+        task_status.status = "failed"
+        task_status.message = "Analysis failed"
+        task_status.error = error
+        task_status.updated_at = datetime.utcnow()
         
-        return {
-            "service": "analysis",
-            "test_status": "passed",
-            "active_sessions": len(session_ids),
-            "components_tested": [
-                "session_management",
-                "progress_tracking",
-                "result_caching"
-            ],
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error testing analysis service: {e}")
-        return {
-            "service": "analysis",
-            "test_status": "failed",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        await task_manager.store_task_status(task_status)
+        
+        progress_update = ProgressUpdate(
+            task_id=task_id,
+            progress=task_status.progress,
+            message="Analysis failed"
+        )
+        await manager.send_progress_update(task_id, progress_update)
