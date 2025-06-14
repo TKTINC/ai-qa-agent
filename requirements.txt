@@ -73,3 +73,10 @@ ast-tools==0.1.0
 autopep8==2.0.4
 rope==1.11.0
 bandit==1.7.5
+
+# Sprint 2.3 - Multi-Agent Architecture & Collaboration
+networkx==3.2.1
+matplotlib==3.8.2
+plotly==5.17.0
+websockets==12.0
+aioredis==2.0.1
