@@ -118,3 +118,9 @@ from src.web.routes.analytics_routes import router as analytics_router
 
 # Include analytics router
 app.include_router(analytics_router)
+
+# Import demo routes
+from src.web.routes.demo_routes import router as demo_router
+
+# Include demo router
+app.include_router(demo_router)
