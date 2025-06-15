@@ -153,3 +153,9 @@ opentelemetry-instrumentation-fastapi==0.42b0
 
 # Optional Analytics Dependencies
 scipy==1.11.4
+
+# Documentation Dependencies (Sprint 5.3)
+markdown==3.5.1
+pygments==2.17.2
+jinja2==3.1.2
+pyyaml==6.0.1
