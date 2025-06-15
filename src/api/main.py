@@ -112,3 +112,9 @@ from src.web.routes.agent_interface import router as web_router
 
 # Include web router
 app.include_router(web_router)
+
+# Import analytics routes
+from src.web.routes.analytics_routes import router as analytics_router
+
+# Include analytics router
+app.include_router(analytics_router)

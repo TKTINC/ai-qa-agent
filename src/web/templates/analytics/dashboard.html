@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Analytics Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            transition: all 0.3s ease;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+        }
+        
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .trend-up {
+            color: #10b981;
+        }
+        
+        .trend-down {
+            color: #ef4444;
+        }
+        
+        .trend-stable {
+            color: #6b7280;
+        }
+        
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease;
+        }
+        
+        .chart-container:hover {
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+        }
+        
+        .alert-card {
+            border-left: 4px solid;
+            animation: slideIn 0.5s ease;
+        }
+        
+        .alert-info {
+            border-left-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+        
+        .alert-warning {
+            border-left-color: #f59e0b;
+            background-color: #fffbeb;
+        }
+        
+        .alert-critical {
+            border-left-color: #ef4444;
+            background-color: #fef2f2;
+        }
+        
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        
+        .loading-spinner {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .status-excellent {
+            background-color: #10b981;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-good {
+            background-color: #f59e0b;
+        }
+        
+        .status-attention {
+            background-color: #ef4444;
+            animation: blink 1s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto px-4 py-6">
+        <!-- Header -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800 mb-2">📊 AI Agent Analytics Dashboard</h1>
+                    <p class="text-gray-600">Real-time intelligence monitoring and predictive analytics</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center">
+                        <span class="status-indicator status-excellent"></span>
+                        <span class="text-sm text-gray-600">System Status: <span id="system-status">Excellent</span></span>
+                    </div>
+                    <select id="time-range-selector" class="px-3 py-2 border border-gray-300 rounded-md text-sm">
+                        <option value="1h">Last Hour</option>
+                        <option value="6h">Last 6 Hours</option>
+                        <option value="24h" selected>Last 24 Hours</option>
+                        <option value="7d">Last 7 Days</option>
+                        <option value="30d">Last 30 Days</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Live Metrics Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
+            <div class="metric-card rounded-lg p-6 text-white">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-sm opacity-90 mb-1">Reasoning Quality</p>
+                        <p class="metric-value" id="reasoning-quality">--</p>
+                        <p class="text-xs opacity-75">Average confidence score</p>
+                    </div>
+                    <span id="reasoning-trend" class="text-lg">📈</span>
+                </div>
+            </div>
+            
+            <div class="metric-card rounded-lg p-6 text-white" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-sm opacity-90 mb-1">Learning Velocity</p>
+                        <p class="metric-value" id="learning-velocity">--</p>
+                        <p class="text-xs opacity-75">Events per hour</p>
+                    </div>
+                    <span id="learning-trend" class="text-lg">🧠</span>
+                </div>
+            </div>
+            
+            <div class="metric-card rounded-lg p-6 text-white" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-sm opacity-90 mb-1">User Satisfaction</p>
+                        <p class="metric-value" id="user-satisfaction">--</p>
+                        <p class="text-xs opacity-75">Rating out of 5.0</p>
+                    </div>
+                    <span id="satisfaction-trend" class="text-lg">😊</span>
+                </div>
+            </div>
+            
+            <div class="metric-card rounded-lg p-6 text-white" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-sm opacity-90 mb-1">Collaboration</p>
+                        <p class="metric-value" id="collaboration-score">--</p>
+                        <p class="text-xs opacity-75">Effectiveness score</p>
+                    </div>
+                    <span id="collaboration-trend" class="text-lg">🤝</span>
+                </div>
+            </div>
+            
+            <div class="metric-card rounded-lg p-6 text-white" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-sm opacity-90 mb-1">System Health</p>
+                        <p class="metric-value" id="system-health">--</p>
+                        <p class="text-xs opacity-75">Overall health score</p>
+                    </div>
+                    <span id="health-trend" class="text-lg">⚡</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Alerts Section -->
+        <div id="alerts-container" class="mb-8" style="display: none;">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">🚨 Active Alerts</h2>
+            <div id="alerts-list" class="space-y-3">
+                <!-- Alerts will be populated here -->
+            </div>
+        </div>
+        
+        <!-- Charts Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+            <!-- Intelligence Radar Chart -->
+            <div class="chart-container p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">🧠 Intelligence Overview</h2>
+                    <div class="loading-spinner" id="radar-loading"></div>
+                </div>
+                <div id="intelligence-radar-chart" style="height: 500px;"></div>
+            </div>
+            
+            <!-- Learning Velocity Chart -->
+            <div class="chart-container p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">📈 Learning Velocity</h2>
+                    <div class="loading-spinner" id="learning-loading"></div>
+                </div>
+                <div id="learning-velocity-chart" style="height: 500px;"></div>
+            </div>
+            
+            <!-- Agent Performance Chart -->
+            <div class="chart-container p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">🤖 Agent Performance</h2>
+                    <div class="loading-spinner" id="performance-loading"></div>
+                </div>
+                <div id="agent-performance-chart" style="height: 500px;"></div>
+            </div>
+            
+            <!-- Collaboration Network -->
+            <div class="chart-container p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">🤝 Collaboration Network</h2>
+                    <div class="loading-spinner" id="collaboration-loading"></div>
+                </div>
+                <div id="collaboration-network-chart" style="height: 500px;"></div>
+            </div>
+        </div>
+        
+        <!-- Satisfaction Trends -->
+        <div class="chart-container p-6 mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold text-gray-800">😊 User Satisfaction Trends</h2>
+                <div class="loading-spinner" id="satisfaction-loading"></div>
+            </div>
+            <div id="satisfaction-trends-chart" style="height: 400px;"></div>
+        </div>
+        
+        <!-- Insights and Recommendations -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- System Insights -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">💡 System Insights</h2>
+                <div id="insights-list" class="space-y-3">
+                    <!-- Insights will be populated here -->
+                </div>
+            </div>
+            
+            <!-- Predictive Analytics -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">🔮 Predictive Analytics</h2>
+                <div id="predictions-content">
+                    <p class="text-gray-600">Loading predictions...</p>
+                </div>
+                <button id="generate-predictions" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                    Generate 24h Forecast
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class AnalyticsDashboard {
+            constructor() {
+                this.websocket = null;
+                this.currentTimeRange = '24h';
+                this.charts = {};
+                
+                this.initializeWebSocket();
+                this.initializeEventListeners();
+                this.loadInitialData();
+            }
+            
+            initializeWebSocket() {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/web/analytics/ws/live-analytics`;
+                
+                this.websocket = new WebSocket(wsUrl);
+                
+                this.websocket.onopen = () => {
+                    console.log('Analytics WebSocket connected');
+                };
+                
+                this.websocket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage(data);
+                };
+                
+                this.websocket.onclose = () => {
+                    console.log('Analytics WebSocket disconnected');
+                    setTimeout(() => this.initializeWebSocket(), 3000);
+                };
+                
+                this.websocket.onerror = (error) => {
+                    console.error('Analytics WebSocket error:', error);
+                };
+            }
+            
+            initializeEventListeners() {
+                // Time range selector
+                document.getElementById('time-range-selector').addEventListener('change', (e) => {
+                    this.currentTimeRange = e.target.value;
+                    this.refreshDashboard();
+                });
+                
+                // Generate predictions button
+                document.getElementById('generate-predictions').addEventListener('click', () => {
+                    this.generatePredictions();
+                });
+            }
+            
+            async loadInitialData() {
+                try {
+                    // Load live metrics
+                    await this.loadLiveMetrics();
+                    
+                    // Load charts
+                    await this.loadAllCharts();
+                    
+                    // Load insights
+                    await this.loadInsights();
+                    
+                } catch (error) {
+                    console.error('Error loading initial data:', error);
+                }
+            }
+            
+            async loadLiveMetrics() {
+                try {
+                    const response = await fetch('/web/analytics/api/live-metrics');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.updateMetricCards(data.metrics);
+                        this.updateAlerts(data.alerts);
+                    }
+                } catch (error) {
+                    console.error('Error loading live metrics:', error);
+                }
+            }
+            
+            updateMetricCards(metrics) {
+                // Update reasoning quality
+                if (metrics.reasoning_quality) {
+                    document.getElementById('reasoning-quality').textContent = 
+                        (metrics.reasoning_quality.value * 100).toFixed(1) + '%';
+                    this.updateTrendIndicator('reasoning-trend', metrics.reasoning_quality.trend);
+                }
+                
+                // Update learning velocity
+                if (metrics.learning_velocity) {
+                    document.getElementById('learning-velocity').textContent = 
+                        metrics.learning_velocity.value.toFixed(2);
+                    this.updateTrendIndicator('learning-trend', metrics.learning_velocity.trend);
+                }
+                
+                // Update user satisfaction
+                if (metrics.user_satisfaction) {
+                    document.getElementById('user-satisfaction').textContent = 
+                        (metrics.user_satisfaction.value * 5.0).toFixed(2);
+                    this.updateTrendIndicator('satisfaction-trend', metrics.user_satisfaction.trend);
+                }
+                
+                // Update collaboration
+                if (metrics.collaboration_effectiveness) {
+                    document.getElementById('collaboration-score').textContent = 
+                        (metrics.collaboration_effectiveness.value * 100).toFixed(1) + '%';
+                    this.updateTrendIndicator('collaboration-trend', metrics.collaboration_effectiveness.trend);
+                }
+                
+                // Update system health
+                if (metrics.system_health) {
+                    document.getElementById('system-health').textContent = 
+                        (metrics.system_health.value * 100).toFixed(1) + '%';
+                    this.updateTrendIndicator('health-trend', metrics.system_health.trend);
+                    
+                    // Update system status
+                    const healthValue = metrics.system_health.value;
+                    const statusElement = document.getElementById('system-status');
+                    if (healthValue > 0.9) {
+                        statusElement.textContent = 'Excellent';
+                        statusElement.className = 'text-green-600';
+                    } else if (healthValue > 0.8) {
+                        statusElement.textContent = 'Good';
+                        statusElement.className = 'text-yellow-600';
+                    } else {
+                        statusElement.textContent = 'Needs Attention';
+                        statusElement.className = 'text-red-600';
+                    }
+                }
+            }
+            
+            updateTrendIndicator(elementId, trend) {
+                const element = document.getElementById(elementId);
+                if (trend === 'up') {
+                    element.textContent = '📈';
+                    element.className = 'text-lg trend-up';
+                } else if (trend === 'down') {
+                    element.textContent = '📉';
+                    element.className = 'text-lg trend-down';
+                } else {
+                    element.textContent = '➡️';
+                    element.className = 'text-lg trend-stable';
+                }
+            }
+            
+            updateAlerts(alerts) {
+                const container = document.getElementById('alerts-container');
+                const list = document.getElementById('alerts-list');
+                
+                if (alerts && alerts.length > 0) {
+                    container.style.display = 'block';
+                    list.innerHTML = '';
+                    
+                    alerts.forEach(alert => {
+                        const alertDiv = document.createElement('div');
+                        alertDiv.className = `alert-card alert-${alert.severity} p-4 rounded-lg`;
+                        alertDiv.innerHTML = `
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="font-semibold text-sm">${alert.severity.toUpperCase()}: ${alert.metric}</p>
+                                    <p class="text-sm mt-1">${alert.message}</p>
+                                </div>
+                                <span class="text-xs text-gray-500">${new Date(alert.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                        `;
+                        list.appendChild(alertDiv);
+                    });
+                } else {
+                    container.style.display = 'none';
+                }
+            }
+            
+            async loadAllCharts() {
+                const chartLoaders = [
+                    { id: 'intelligence-radar-chart', loader: () => this.loadIntelligenceRadar(), loadingId: 'radar-loading' },
+                    { id: 'learning-velocity-chart', loader: () => this.loadLearningVelocity(), loadingId: 'learning-loading' },
+                    { id: 'agent-performance-chart', loader: () => this.loadAgentPerformance(), loadingId: 'performance-loading' },
+                    { id: 'collaboration-network-chart', loader: () => this.loadCollaborationNetwork(), loadingId: 'collaboration-loading' },
+                    { id: 'satisfaction-trends-chart', loader: () => this.loadSatisfactionTrends(), loadingId: 'satisfaction-loading' }
+                ];
+                
+                await Promise.all(chartLoaders.map(async (chart) => {
+                    try {
+                        await chart.loader();
+                        document.getElementById(chart.loadingId).style.display = 'none';
+                    } catch (error) {
+                        console.error(`Error loading ${chart.id}:`, error);
+                        document.getElementById(chart.loadingId).style.display = 'none';
+                    }
+                }));
+            }
+            
+            async loadIntelligenceRadar() {
+                const response = await fetch('/web/analytics/api/charts/intelligence-radar');
+                const chartData = await response.json();
+                
+                Plotly.newPlot('intelligence-radar-chart', chartData.data, chartData.layout, {
+                    responsive: true,
+                    displayModeBar: false
+                });
+            }
+            
+            async loadLearningVelocity() {
+                const response = await fetch(`/web/analytics/api/charts/learning-velocity?time_range=${this.currentTimeRange}`);
+                const chartData = await response.json();
+                
+                Plotly.newPlot('learning-velocity-chart', chartData.data, chartData.layout, {
+                    responsive: true,
+                    displayModeBar: false
+                });
+            }
+            
+            async loadAgentPerformance() {
+                const response = await fetch('/web/analytics/api/charts/agent-performance');
+                const chartData = await response.json();
+                
+                Plotly.newPlot('agent-performance-chart', chartData.data, chartData.layout, {
+                    responsive: true,
+                    displayModeBar: false
+                });
+            }
+            
+            async loadCollaborationNetwork() {
+                const response = await fetch('/web/analytics/api/charts/collaboration-network');
+                const chartData = await response.json();
+                
+                Plotly.newPlot('collaboration-network-chart', chartData.data, chartData.layout, {
+                    responsive: true,
+                    displayModeBar: false
+                });
+            }
+            
+            async loadSatisfactionTrends() {
+                const response = await fetch(`/web/analytics/api/charts/satisfaction-trends?time_range=${this.currentTimeRange}`);
+                const chartData = await response.json();
+                
+                Plotly.newPlot('satisfaction-trends-chart', chartData.data, chartData.layout, {
+                    responsive: true,
+                    displayModeBar: false
+                });
+            }
+            
+            async loadInsights() {
+                try {
+                    const response = await fetch('/web/analytics/api/system-health');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.updateInsights(data.insights);
+                    }
+                } catch (error) {
+                    console.error('Error loading insights:', error);
+                }
+            }
+            
+            updateInsights(insights) {
+                const list = document.getElementById('insights-list');
+                list.innerHTML = '';
+                
+                if (insights && insights.length > 0) {
+                    insights.forEach(insight => {
+                        const insightDiv = document.createElement('div');
+                        insightDiv.className = `p-3 rounded-lg border ${this.getInsightClass(insight.type)}`;
+                        insightDiv.innerHTML = `
+                            <div class="flex items-start space-x-3">
+                                <span class="text-lg">${this.getInsightIcon(insight.category)}</span>
+                                <div>
+                                    <p class="font-semibold text-sm">${insight.title}</p>
+                                    <p class="text-xs text-gray-600 mt-1">${insight.description}</p>
+                                    <span class="text-xs bg-gray-100 px-2 py-1 rounded mt-2 inline-block">
+                                        ${insight.impact} impact
+                                    </span>
+                                </div>
+                            </div>
+                        `;
+                        list.appendChild(insightDiv);
+                    });
+                } else {
+                    list.innerHTML = '<p class="text-gray-600 text-sm">No insights available at this time.</p>';
+                }
+            }
+            
+            getInsightClass(type) {
+                switch (type) {
+                    case 'positive': return 'border-green-200 bg-green-50';
+                    case 'warning': return 'border-yellow-200 bg-yellow-50';
+                    case 'critical': return 'border-red-200 bg-red-50';
+                    default: return 'border-gray-200 bg-gray-50';
+                }
+            }
+            
+            getInsightIcon(category) {
+                switch (category) {
+                    case 'learning': return '🧠';
+                    case 'collaboration': return '🤝';
+                    case 'satisfaction': return '😊';
+                    case 'performance': return '⚡';
+                    default: return '💡';
+                }
+            }
+            
+            async generatePredictions() {
+                try {
+                    const button = document.getElementById('generate-predictions');
+                    const content = document.getElementById('predictions-content');
+                    
+                    button.disabled = true;
+                    button.textContent = 'Generating...';
+                    content.innerHTML = '<p class="text-gray-600">Generating predictions...</p>';
+                    
+                    const response = await fetch('/web/analytics/api/predictions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            prediction_type: 'all',
+                            forecast_hours: 24
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.displayPredictions(data.predictions);
+                    } else {
+                        content.innerHTML = '<p class="text-red-600">Error generating predictions</p>';
+                    }
+                    
+                } catch (error) {
+                    console.error('Error generating predictions:', error);
+                    document.getElementById('predictions-content').innerHTML = 
+                        '<p class="text-red-600">Error generating predictions</p>';
+                } finally {
+                    const button = document.getElementById('generate-predictions');
+                    button.disabled = false;
+                    button.textContent = 'Generate 24h Forecast';
+                }
+            }
+            
+            displayPredictions(predictions) {
+                const content = document.getElementById('predictions-content');
+                let html = '';
+                
+                if (predictions.user_satisfaction) {
+                    const satisfaction = predictions.user_satisfaction;
+                    html += `
+                        <div class="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-200">
+                            <h4 class="font-semibold text-sm mb-2">😊 User Satisfaction Forecast</h4>
+                            <p class="text-sm">Current: <span class="font-medium">${satisfaction.current_satisfaction?.toFixed(2) || 'N/A'}</span></p>
+                            <p class="text-sm">Trend: <span class="font-medium">${satisfaction.trend || 'stable'}</span></p>
+                            <p class="text-sm">Confidence: <span class="font-medium">${(satisfaction.confidence * 100).toFixed(1)}%</span></p>
+                        </div>
+                    `;
+                }
+                
+                if (predictions.agent_performance) {
+                    const performance = predictions.agent_performance;
+                    html += `
+                        <div class="mb-4 p-3 rounded-lg bg-green-50 border border-green-200">
+                            <h4 class="font-semibold text-sm mb-2">🤖 Agent Performance Forecast</h4>
+                            <p class="text-sm">Agent: <span class="font-medium">${performance.agent_name || 'N/A'}</span></p>
+                            <p class="text-sm">Current: <span class="font-medium">${(performance.current_performance * 100).toFixed(1)}%</span></p>
+                            <p class="text-sm">Trend: <span class="font-medium">${performance.trend_direction || 'stable'}</span></p>
+                        </div>
+                    `;
+                }
+                
+                if (html === '') {
+                    html = '<p class="text-gray-600 text-sm">No predictions available</p>';
+                }
+                
+                content.innerHTML = html;
+            }
+            
+            handleWebSocketMessage(data) {
+                switch (data.type) {
+                    case 'initial_data':
+                        this.updateMetricCards(data.metrics);
+                        break;
+                    case 'analytics_update':
+                        if (data.data.metrics) {
+                            this.updateMetricCards(data.data.metrics);
+                        }
+                        if (data.data.alerts) {
+                            this.updateAlerts(data.data.alerts);
+                        }
+                        break;
+                }
+            }
+            
+            async refreshDashboard() {
+                await this.loadLearningVelocity();
+                await this.loadSatisfactionTrends();
+            }
+        }
+        
+        // Initialize dashboard when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new AnalyticsDashboard();
+        });
+    </script>
+</body>
+</html>
