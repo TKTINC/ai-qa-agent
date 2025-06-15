@@ -1,0 +1,27 @@
+# Agent Orchestrator Container - Optimized for reasoning and coordination
+FROM agent-base as agent-orchestrator
+
+# Orchestrator-specific optimizations
+ENV AGENT_MODE=orchestrator
+ENV REASONING_CACHE_SIZE=1000
+ENV CONVERSATION_CONTEXT_LIMIT=10000
+ENV MAX_CONCURRENT_REASONING=8
+
+# Orchestrator requires more memory for reasoning tasks
+ENV AGENT_MEMORY_LIMIT=4096
+
+# Copy orchestrator-specific code
+COPY --chown=app:app src/agent/orchestrator.py /app/src/agent/
+COPY --chown=app:app src/agent/reasoning/ /app/src/agent/reasoning/
+COPY --chown=app:app src/agent/planning/ /app/src/agent/planning/
+COPY --chown=app:app src/agent/memory/ /app/src/agent/memory/
+
+# Health check specific to orchestrator
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health/agent')" || exit 1
+
+# Expose agent orchestrator port
+EXPOSE 8000
+
+# Start orchestrator service
+CMD ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

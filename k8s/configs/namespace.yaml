@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qa-agent
+  labels:
+    name: qa-agent
+    tier: application

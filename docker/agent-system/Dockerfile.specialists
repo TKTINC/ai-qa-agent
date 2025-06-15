@@ -1,0 +1,23 @@
+# Specialist Agents Container - Optimized for domain expertise
+FROM agent-base as specialist-agents
+
+# Specialist-specific optimizations
+ENV AGENT_MODE=specialist
+ENV SPECIALIST_POOL_SIZE=5
+ENV TOOL_EXECUTION_TIMEOUT=300
+ENV DOMAIN_KNOWLEDGE_CACHE=2048
+
+# Copy specialist agent code
+COPY --chown=app:app src/agent/specialists/ /app/src/agent/specialists/
+COPY --chown=app:app src/agent/tools/ /app/src/agent/tools/
+COPY --chown=app:app src/validation/ /app/src/validation/
+
+# Health check for specialists
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "from src.agent.specialists.base_specialist import check_specialist_health; check_specialist_health()" || exit 1
+
+# Expose specialist agent port
+EXPOSE 8001
+
+# Start specialist agent pool
+CMD ["python", "-m", "src.agent.specialists.specialist_pool"]

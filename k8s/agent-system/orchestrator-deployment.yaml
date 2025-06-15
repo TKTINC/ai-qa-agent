@@ -1,0 +1,169 @@
+# Agent Orchestrator Deployment for Kubernetes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-orchestrator
+  namespace: qa-agent
+  labels:
+    app: agent-orchestrator
+    component: reasoning
+    tier: core
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: agent-orchestrator
+  template:
+    metadata:
+      labels:
+        app: agent-orchestrator
+        component: reasoning
+        tier: core
+    spec:
+      containers:
+      - name: orchestrator
+        image: qa-agent/orchestrator:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+            ephemeral-storage: 2Gi
+        env:
+        - name: AGENT_MODE
+          value: "orchestrator"
+        - name: AGENT_REASONING_CACHE
+          value: "redis://redis-agent-state:6379/0"
+        - name: CONVERSATION_PERSISTENCE
+          value: "enabled"
+        - name: MULTI_AGENT_COORDINATION
+          value: "enabled"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: agent-database-secret
+              key: connection-string
+        - name: REDIS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: redis-url
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        volumeMounts:
+        - name: agent-config
+          mountPath: /app/config
+          readOnly: true
+        - name: agent-logs
+          mountPath: /app/logs
+      volumes:
+      - name: agent-config
+        configMap:
+          name: agent-config
+      - name: agent-logs
+        emptyDir: {}
+      nodeSelector:
+        workload-type: cpu-intensive
+      tolerations:
+      - key: "workload-type"
+        operator: "Equal"
+        value: "cpu-intensive"
+        effect: "NoSchedule"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-orchestrator
+  namespace: qa-agent
+  labels:
+    app: agent-orchestrator
+spec:
+  selector:
+    app: agent-orchestrator
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Horizontal Pod Autoscaler for Agent Orchestrator
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-orchestrator-hpa
+  namespace: qa-agent
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agent-orchestrator
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: agent_conversation_queue_length
+      target:
+        type: AverageValue
+        averageValue: "10"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60

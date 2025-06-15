@@ -1,0 +1,108 @@
+# Specialist Agents Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: specialist-agents
+  namespace: qa-agent
+  labels:
+    app: specialist-agents
+    component: expertise
+    tier: core
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: specialist-agents
+  template:
+    metadata:
+      labels:
+        app: specialist-agents
+        component: expertise
+        tier: core
+    spec:
+      containers:
+      - name: specialists
+        image: qa-agent/specialists:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8001
+          name: grpc
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1500m
+            memory: 3Gi
+        env:
+        - name: AGENT_MODE
+          value: "specialist"
+        - name: SPECIALIST_TYPES
+          value: "test_architect,code_reviewer,performance_analyst,security_specialist,documentation_expert"
+        - name: REDIS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: redis-url
+        - name: TOOL_EXECUTION_TIMEOUT
+          value: "300"
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "from src.agent.specialists.base_specialist import check_specialist_health; check_specialist_health()"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "from src.agent.specialists.base_specialist import check_specialist_health; check_specialist_health()"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: specialist-agents
+  namespace: qa-agent
+spec:
+  selector:
+    app: specialist-agents
+  ports:
+  - name: grpc
+    port: 8001
+    targetPort: 8001
+  type: ClusterIP
+
+---
+# HPA for Specialist Agents
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: specialist-agents-hpa
+  namespace: qa-agent
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: specialist-agents
+  minReplicas: 5
+  maxReplicas: 50
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  - type: Pods
+    pods:
+      metric:
+        name: specialist_task_queue_length
+      target:
+        type: AverageValue
+        averageValue: "5"

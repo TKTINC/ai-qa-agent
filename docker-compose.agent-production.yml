@@ -1,0 +1,192 @@
+version: '3.8'
+services:
+  # Core Agent Services
+  agent-orchestrator:
+    build:
+      context: .
+      dockerfile: docker/agent-system/Dockerfile.orchestrator
+    image: qa-agent/orchestrator:latest
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    environment:
+      - AGENT_MODE=orchestrator
+      - REASONING_CACHE_SIZE=1000
+      - CONVERSATION_CONTEXT_LIMIT=10000
+      - REDIS_URL=redis://redis-agent-state:6379/0
+      - DATABASE_URL=postgresql://agent_user:agent_password@postgres-agent:5432/agent_db
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis-agent-state
+      - postgres-agent
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health/agent')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - agent-network
+
+  # Specialist Agent Pool
+  specialist-agents:
+    build:
+      context: .
+      dockerfile: docker/agent-system/Dockerfile.specialists
+    image: qa-agent/specialists:latest
+    deploy:
+      replicas: 5
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 3G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    environment:
+      - AGENT_MODE=specialist
+      - SPECIALIST_TYPES=test_architect,code_reviewer,performance_analyst,security_specialist,documentation_expert
+      - REDIS_URL=redis://redis-agent-state:6379/1
+      - TOOL_EXECUTION_TIMEOUT=300
+    depends_on:
+      - redis-agent-state
+      - agent-orchestrator
+    networks:
+      - agent-network
+
+  # Conversation Management
+  conversation-manager:
+    build:
+      context: .
+      dockerfile: docker/agent-system/Dockerfile.conversation
+    image: qa-agent/conversation:latest
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    environment:
+      - AGENT_MODE=conversation
+      - WEBSOCKET_MAX_CONNECTIONS=1000
+      - CONVERSATION_PERSISTENCE=redis
+      - REAL_TIME_ANALYTICS=enabled
+      - REDIS_URL=redis://redis-agent-state:6379/2
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      - redis-agent-state
+    networks:
+      - agent-network
+
+  # Agent Learning System
+  learning-engine:
+    build:
+      context: .
+      dockerfile: docker/agent-system/Dockerfile.learning
+    image: qa-agent/learning:latest
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 3G
+        reservations:
+          cpus: '0.5'
+          memory: 1.5G
+    environment:
+      - AGENT_MODE=learning
+      - LEARNING_MODE=continuous
+      - PATTERN_ANALYSIS=enabled
+      - CROSS_AGENT_LEARNING=enabled
+      - REDIS_URL=redis://redis-agent-state:6379/3
+    volumes:
+      - agent_learning_data:/app/learning_data
+    depends_on:
+      - redis-agent-state
+    networks:
+      - agent-network
+
+  # Redis for Agent State and Learning
+  redis-agent-state:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.2'
+          memory: 512M
+    volumes:
+      - redis_agent_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agent-network
+
+  # PostgreSQL for persistent data
+  postgres-agent:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=agent_db
+      - POSTGRES_USER=agent_user
+      - POSTGRES_PASSWORD=agent_password
+    volumes:
+      - postgres_agent_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_user -d agent_db"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agent-network
+
+  # Load Balancer (HAProxy)
+  load-balancer:
+    image: haproxy:2.8-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/configs/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - agent-orchestrator
+      - conversation-manager
+    networks:
+      - agent-network
+
+volumes:
+  agent_learning_data:
+  redis_agent_data:
+  postgres_agent_data:
+
+networks:
+  agent-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

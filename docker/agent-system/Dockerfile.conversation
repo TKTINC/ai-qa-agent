@@ -1,0 +1,29 @@
+# Conversation Manager Container - Optimized for real-time communication
+FROM agent-base as conversation-manager
+
+# Conversation-specific optimizations
+ENV AGENT_MODE=conversation
+ENV WEBSOCKET_MAX_CONNECTIONS=1000
+ENV CONVERSATION_PERSISTENCE=redis
+ENV REAL_TIME_ANALYTICS=enabled
+ENV SESSION_TIMEOUT=3600
+
+# Install WebSocket optimizations
+RUN pip install --no-cache-dir \
+    websockets==12.0 \
+    python-socketio==5.10.0
+
+# Copy conversation management code
+COPY --chown=app:app src/chat/ /app/src/chat/
+COPY --chown=app:app src/web/ /app/src/web/
+COPY --chown=app:app src/api/routes/agent/ /app/src/api/routes/agent/
+
+# Health check for conversation manager
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8080/health')" || exit 1
+
+# Expose WebSocket and HTTP ports
+EXPOSE 8080 8081
+
+# Start conversation manager with WebSocket support
+CMD ["python", "-m", "src.chat.conversation_server"]

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: qa-agent
+data:
+  redis-url: "redis://redis-agent-state:6379"
+  log-level: "INFO"
+  agent-mode: "production"
+  reasoning-cache-size: "1000"
+  conversation-context-limit: "10000"
+  learning-mode: "continuous"
+  pattern-analysis: "enabled"
+  cross-agent-learning: "enabled"

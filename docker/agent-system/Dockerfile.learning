@@ -1,0 +1,33 @@
+# Learning Engine Container - Optimized for continuous learning
+FROM agent-base as learning-engine
+
+# Learning-specific optimizations
+ENV AGENT_MODE=learning
+ENV LEARNING_MODE=continuous
+ENV PATTERN_ANALYSIS=enabled
+ENV CROSS_AGENT_LEARNING=enabled
+ENV LEARNING_PERSISTENCE_INTERVAL=300
+
+# Install ML libraries for learning
+RUN pip install --no-cache-dir \
+    scikit-learn==1.3.2 \
+    pandas==2.1.3 \
+    numpy==1.24.4 \
+    scipy==1.11.4
+
+# Copy learning system code
+COPY --chown=app:app src/agent/learning/ /app/src/agent/learning/
+COPY --chown=app:app src/analytics/ /app/src/analytics/
+
+# Create learning data volume
+VOLUME ["/app/learning_data"]
+
+# Health check for learning engine
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "from src.agent.learning.learning_engine import check_learning_health; check_learning_health()" || exit 1
+
+# Expose learning engine port
+EXPOSE 8002
+
+# Start learning engine
+CMD ["python", "-m", "src.agent.learning.learning_server"]

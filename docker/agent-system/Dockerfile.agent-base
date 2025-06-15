@@ -1,0 +1,58 @@
+# Multi-stage Docker build optimized for AI Agent workloads
+# Base stage with common dependencies and optimizations
+FROM python:3.11-slim as agent-base
+
+# Set optimal environment variables for agent workloads
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONOPTIMIZE=2
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONHASHSEED=random
+
+# Agent-specific environment variables
+ENV AGENT_REASONING_WORKERS=4
+ENV AGENT_MEMORY_LIMIT=2048
+ENV CONVERSATION_CACHE_SIZE=1000
+ENV LEARNING_BATCH_SIZE=100
+
+# Install system dependencies optimized for AI workloads
+RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    libc6-dev \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user for security
+RUN useradd --create-home --shell /bin/bash app
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies with optimizations
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Install performance libraries for agent workloads
+RUN pip install --no-cache-dir \
+    uvloop==0.19.0 \
+    orjson==3.9.10 \
+    asyncpg==0.29.0 \
+    redis[hiredis]==5.0.1 \
+    aiofiles==23.2.1
+
+# Copy application code
+COPY --chown=app:app . .
+
+# Switch to app user
+USER app
+
+# Health check for agent systems
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "import asyncio; from src.operations.agent_state_manager import get_state_manager; asyncio.run(get_state_manager().get_health_status())" || exit 1
+
+# Default command (to be overridden in derived images)
+CMD ["python", "-m", "src.api.main"]
