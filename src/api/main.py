@@ -106,3 +106,9 @@ from .routes.agent.conversation import router as agent_conversation_router
 
 # Include agent routes
 app.include_router(agent_conversation_router, tags=["Agent System"])
+
+# Import web routes
+from src.web.routes.agent_interface import router as web_router
+
+# Include web router
+app.include_router(web_router)

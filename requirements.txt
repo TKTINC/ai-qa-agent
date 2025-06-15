@@ -120,3 +120,9 @@ python-multipart==0.0.6
 streamlit==1.28.2
 dash==2.14.2
 bokeh==3.3.2
+
+# Sprint 4.1 - Web Interface Dependencies
+jinja2==3.1.3
+aiofiles==23.2.1
+python-multipart==0.0.6
+starlette==0.27.0
