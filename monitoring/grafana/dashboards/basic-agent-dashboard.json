@@ -1,0 +1,39 @@
+{
+  "dashboard": {
+    "title": "AI Agent Basic Monitoring",
+    "description": "Basic monitoring dashboard for AI agent intelligence",
+    "tags": ["ai-agents", "monitoring"],
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Agent Reasoning Quality",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "agent_reasoning_quality_score",
+            "legendFormat": "{{agent_name}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "max": 1,
+            "unit": "percentunit"
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Learning Events",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(agent_learning_events_total[5m])",
+            "legendFormat": "{{agent_name}}"
+          }
+        ]
+      }
+    ]
+  }
+}
